@@ -1,85 +1,70 @@
 # agents/Group8/MCTSNode.py
 
 class MCTSNode:
-    """
-    A node in the MCTS tree.
-    Supports both simple UCT and PUCT (for NN-guided MCTS).
-    """
-
-    def __init__(self, parent=None, prior_p=1.0):
-        # Tree structure
+    def __init__(self, parent=None, prior_p: float = 1.0):
         self.parent = parent
-        self.children = {}  # (x,y) -> child node
 
         # MCTS statistics
-        self.N = 0      # visit count
-        self.W = 0.0    # total value
-        self.Q = 0.0    # mean value
+        self.P = prior_p   # prior probability (from NN)
+        self.N = 0         # visit count
+        self.W = 0.0       # total value
+        self.Q = 0.0       # mean value
 
-        # Prior from neural network (PUCT)
-        self.P = prior_p
+        # Children: dict[(x, y)] -> MCTSNode
+        self.children = {}
 
-        # Moves not yet expanded
-        self.unexpanded_moves = None  # assigned during expansion
+        # For expansion: priors for each legal move
+        self.priors = None  # dict[(x, y)] -> float or None
 
-        # Optional cached NN value for the state
-        self.value_from_nn = None
-
-
-    def is_expanded(self):
+    # --------------------------------------
+    def is_expanded(self) -> bool:
         """
-        A node is expanded once we have recorded its legal moves.
+        A node is 'expanded' once we've called expand() on it,
+        i.e. once we computed its priors.
         """
-        return self.unexpanded_moves is not None
+        return self.priors is not None
 
-
-    def expand(self, legal_moves, move_priors=None):
+    # --------------------------------------
+    def expand(self, legal_moves, priors):
         """
-        Initialize this node's unexpanded moves list.
-
-        legal_moves: list of (x, y)
-        move_priors: optional dict {(x,y): P}
+        legal_moves: list[(x, y)]
+        priors: dict[(x, y)] -> float
+        Create child nodes for each legal move using provided priors.
         """
-        if move_priors is None:
-            # uniform priors if NN is not integrated yet
-            self.unexpanded_moves = list(legal_moves)
-        else:
-            # we might attach priors per move later
-            self.unexpanded_moves = list(legal_moves)
+        self.priors = {}
+        for move in legal_moves:
+            p = priors.get(move, 1e-6)  # small fallback
+            self.priors[move] = p
+            if move not in self.children:
+                self.children[move] = MCTSNode(parent=self, prior_p=p)
 
-        return self.unexpanded_moves
-
-
-    def add_child(self, move, prior_p=1.0):
+    # --------------------------------------
+    def get_child(self, move):
         """
-        Create and return a new child node for a given move.
+        Return existing child for move, or create it if it doesn't exist yet.
         """
-        child = MCTSNode(parent=self, prior_p=prior_p)
-        self.children[move] = child
-        return child
+        if move not in self.children:
+            prior_p = 1e-6
+            if self.priors is not None and move in self.priors:
+                prior_p = self.priors[move]
+            self.children[move] = MCTSNode(parent=self, prior_p=prior_p)
+        return self.children[move]
 
-
-    def is_leaf(self):
+    # --------------------------------------
+    def backprop(self, value: float):
         """
-        A leaf node has no children yet.
+        Backpropagate value up the tree.
+        'value' is from the perspective of the player to move at THIS node.
+        At each parent, the perspective flips (zero-sum).
         """
-        return len(self.children) == 0
+        node = self
+        v = value
 
+        while node is not None:
+            node.N += 1
+            node.W += v
+            node.Q = node.W / node.N
 
-    def backprop(self, value):
-        """
-        Backpropagate a value up the tree.
-
-        For a zero-sum game:
-          If the current node gets +value,
-          then parent gets -value (opponent perspective flips).
-
-        value: result or NN value in [-1, +1]
-        """
-        self.N += 1
-        self.W += value
-        self.Q = self.W / self.N
-
-        # Flip perspective for parent
-        if self.parent is not None:
-            self.parent.backprop(-value)
+            # Flip perspective for parent
+            v = -v
+            node = node.parent
